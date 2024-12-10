@@ -1,0 +1,13 @@
+[project]
+name = "client"
+version = "0.1.0"
+description = "Terminal chat client"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.11.10",
+    "cryptography>=44.0.0",
+    "pyinstaller>=6.11.1",
+    "pyyaml>=6.0.2",
+    "websockets>=14.1",
+]
