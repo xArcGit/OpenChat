@@ -13,8 +13,7 @@ const db = new Database("db.sqlite", { strict: true });
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
-    uid TEXT PRIMARY KEY, 
-    username TEXT UNIQUE, 
+    username TEXT PRIMARY KEY, 
     publicKey TEXT
   );
 `);
@@ -24,8 +23,7 @@ db.exec(`
     sender TEXT,
     recipient TEXT,
     message TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    delivered BOOLEAN DEFAULT 0
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
 
@@ -39,7 +37,7 @@ app.get(
 		 * @param {WebSocket} ws - The WebSocket instance.
 		 */
 		onOpen(event, ws) {
-			console.log("Connection opened. Waiting for client to send clientId...");
+			console.log("Connection opened. Waiting for client to send clientId... ");
 		},
 
 		/**
@@ -84,7 +82,7 @@ app.get(
 					recipientSocket.send(JSON.stringify({ sender, message: content }));
 				} else {
 					const insertMessage = db.prepare(
-						"INSERT INTO messages (sender, recipient, message, delivered) VALUES ($sender, $recipient, $message, 0)",
+						"INSERT INTO messages (sender, recipient, message) VALUES ($sender, $recipient, $message)",
 					);
 					insertMessage.run(sender, recipient, content);
 				}
@@ -141,15 +139,13 @@ app.post("/register", async (c) => {
 	}
 
 	const insertUser = db.prepare(
-		"INSERT INTO users (uid, username, publicKey) VALUES ($uid, $username, $publicKey);",
+		"INSERT INTO users (username, publicKey) VALUES ($username, $publicKey);",
 	);
-	const uid = nanoid();
-	insertUser.run(uid, username, publicKey);
+	insertUser.run(username, publicKey);
 
 	return c.json(
 		{
 			message: "User registered successfully",
-			uid: uid,
 			username: username,
 			publicKey: publicKey,
 		},
@@ -188,24 +184,27 @@ app.get("/messages", (c) => {
 	 * Marks retrieved messages as delivered.
 	 */
 	const recipient = c.req.query("recipient");
+	const sender = c.req.query("sender");
 
-	if (!recipient) {
-		return c.json({ error: "Recipient is required" }, 400);
+	if (!recipient || !sender) {
+		return c.json({ error: "Recipient and sender are required" }, 400);
 	}
-
 	const fetchMessages = db.prepare(
-		"SELECT sender, message, timestamp FROM messages WHERE recipient = $param AND delivered = 0 ORDER BY timestamp DESC;",
+		"SELECT message FROM messages WHERE recipient = $recipient AND sender = $sender ORDER BY timestamp DESC;",
 	);
 
-	const userMessages = fetchMessages.all(recipient);
+	const userMessages = fetchMessages.all({
+		$recipient: recipient,
+		$sender: sender,
+	});
 	if (userMessages.length === 0) {
 		return c.json({ message: "No messages found for the recipient." }, 200);
 	}
 
-	// const markMessagesDelivered = db.prepare(
-	// 	"UPDATE messages SET delivered = 1 WHERE recipient = $param AND delivered = 0;",
-	// );
-	// markMessagesDelivered.run(recipient);
+	const deleteMessages = db.prepare(
+		"DELETE FROM messages WHERE recipient = $recipient AND sender = $sender;",
+	);
+	deleteMessages.run({ $recipient: recipient, $sender: sender });
 
 	return c.json({ messages: userMessages });
 });
