@@ -88,10 +88,7 @@ class MessageClient:
                         recipient_public_key = serialization.load_pem_public_key(
                             public_key_pem.encode(), backend=default_backend()
                         )
-                        return (
-                            user.get("username"),
-                            recipient_public_key,
-                        )
+                        return (recipient_public_key,)
         except aiohttp.ClientError as e:
             print(f"An error occurred while finding the user: {e}")
         return None
