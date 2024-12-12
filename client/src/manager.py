@@ -67,16 +67,28 @@ class RSAKeyManager:
 
         try:
             file_path = f"{self.key_dir}/{CONFIG_FILE}"
-            if os.path.exists(file_path):
-                with open(f"{self.key_dir}/{CONFIG_FILE}", "r") as f:
-                    key_data = yaml.safe_load(f)
-                    raise FileExistsError(
-                        f"Key file already exists for user {key_data["username"]}."
-                    )
             with open(file_path, "w") as f:
                 yaml.dump(key_data, f)
         except Exception as e:
             print(f"Error saving keys: {e}")
+
+    def keys_exist(self) -> bool:
+        """
+        Check if the keys already exist for the user in the config file.
+
+        Returns:
+            bool: True if keys exist, False otherwise.
+        """
+        file_path = f"{self.key_dir}/{CONFIG_FILE}"
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, "r") as f:
+                    key_data = yaml.safe_load(f)
+                if "private_key" in key_data and "public_key" in key_data:
+                    return True
+            except Exception:
+                pass
+        return False
 
     def load_keys(self) -> None:
         """

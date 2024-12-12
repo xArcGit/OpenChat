@@ -3,9 +3,9 @@ import sys
 from typing import List, Optional
 from dataclasses import dataclass
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from client.src.manager import RSAKeyManager
+from src.manager import RSAKeyManager
 from src.request import MessagingClient
-from client.src.cryptography import RSAEncryptorDecryptor
+from src.cryptography import RSAEncryptorDecryptor
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey, RSAPrivateKey
 from asciimatics.screen import Screen
 from asciimatics.scene import Scene
@@ -201,7 +201,6 @@ async def register_user(username: str) -> None:
             )
         else:
             key_manager.generate_keys()
-            key_manager.save_keys()
 
         async with MessagingClient(username) as client:
             public_key_pem = key_manager.public_key.public_bytes(
@@ -231,7 +230,8 @@ async def main():
         await register_user(username)
     elif len(sys.argv) == 2:
         username = action
-        screen = Screen.wrapper(lambda s: ChatApp(s, username).create_chat_frame())
+        Screen.wrapper(lambda s: ChatApp(s, username).create_chat_frame())
+
     else:
         print("Invalid arguments.")
         print("Usage:")
