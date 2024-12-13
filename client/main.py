@@ -5,7 +5,6 @@ import os
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
-from xmlrpc.client import boolean
 
 import aiohttp
 import websockets
@@ -30,13 +29,25 @@ from cryptography.hazmat.primitives.serialization import (
 
 CONFIG_DIR = "~/.config/OpenChat"
 CONFIG_FILE = "config.yml"
-SERVER_URI = "http://localhost:8000"
+SERVER_URI = "http://localhost:3000"
 WEBSOCKET_URI = "ws://localhost:3000"
+
+# Define constants for RSA key generation and encryption
+PUBLIC_EXPONENT = 65537
+KEY_SIZE = 2048
+BACKEND = default_backend()
+ENCODING = Encoding.PEM
+PRIVATE_FORMAT = PrivateFormat.TraditionalOpenSSL
+PUBLIC_FORMAT = PublicFormat.SubjectPublicKeyInfo
+ENCRYPTION_ALGORITHM = NoEncryption()
+ALGORITHM = hashes.SHA256()
+MGF = padding.MGF1(algorithm=ALGORITHM)
+LABEL = None
 
 
 @dataclass
 class ChatSession:
-    status: boolean = False  # True if the user is online, False otherwise
+    status: bool = False  # True if the user is online, False otherwise
     recipient: Optional[str] = None
     recipient_public_key: Optional[RSAPublicKey] = None
     sender: Optional[str] = None
@@ -44,6 +55,7 @@ class ChatSession:
     sender_private_key: Optional[RSAPrivateKey] = None
     messages: List[str] = field(default_factory=list)
     key_dir: str = os.path.expanduser(CONFIG_DIR)
+    password: Optional[bytes] = None
     http_session: Optional[aiohttp.ClientSession] = None
     websocket: Optional[websockets.WebSocketClientProtocol] = None
 
@@ -58,7 +70,7 @@ class ChatSession:
             raise ValueError("Username must be set before generating keys.")
 
         self.sender_private_key = rsa.generate_private_key(
-            public_exponent=65537, key_size=2048, backend=default_backend()
+            public_exponent=PUBLIC_EXPONENT, key_size=KEY_SIZE, backend=BACKEND
         )
         self.sender_public_key = self.sender_private_key.public_key()
 
@@ -70,14 +82,14 @@ class ChatSession:
             raise ValueError("Keys have not been generated yet.")
 
         private_pem = self.sender_private_key.private_bytes(
-            encoding=Encoding.PEM,
-            format=PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=NoEncryption(),
+            encoding=ENCODING,
+            format=PRIVATE_FORMAT,
+            encryption_algorithm=ENCRYPTION_ALGORITHM,
         )
 
         public_pem = self.sender_public_key.public_bytes(
             encoding=Encoding.PEM,
-            format=PublicFormat.SubjectPublicKeyInfo,
+            format=PUBLIC_FORMAT,
         )
 
         private_key_base64 = base64.b64encode(private_pem).decode("utf-8")
@@ -134,12 +146,10 @@ class ChatSession:
             public_pem = base64.b64decode(public_key_base64)
 
             self.sender_private_key = load_pem_private_key(
-                private_pem, password=None, backend=default_backend()
+                private_pem, password=self.password, backend=BACKEND
             )
 
-            self.sender_public_key = load_pem_public_key(
-                public_pem, backend=default_backend()
-            )
+            self.sender_public_key = load_pem_public_key(public_pem, backend=BACKEND)
 
         except Exception as err:
             raise ValueError(f"Error loading keys from YAML: {err}")
@@ -157,9 +167,9 @@ class ChatSession:
         encrypted_message = self.recipient_public_key.encrypt(
             message.encode("utf-8"),
             padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None,
+                mgf=MGF,
+                algorithm=ALGORITHM,
+                label=LABEL,
             ),
         )
         return base64.b64encode(encrypted_message).decode("utf-8")
@@ -178,9 +188,9 @@ class ChatSession:
         decrypted_message = self.sender_private_key.decrypt(
             encrypted_message,
             padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None,
+                mgf=MGF,
+                algorithm=ALGORITHM,
+                label=LABEL,
             ),
         )
         return decrypted_message.decode("utf-8")
@@ -272,27 +282,10 @@ class ChatSession:
                     public_key_pem = user.get("publicKey")
                     if public_key_pem:
                         self.recipient_public_key = load_pem_public_key(
-                            public_key_pem.encode(), backend=default_backend()
+                            public_key_pem.encode(), backend=BACKEND
                         )
         except aiohttp.ClientError as err:
             raise RuntimeError(f"An error occurred while finding user: {err}")
-
-    async def fetch_messages(self) -> Optional[List[str]]:
-        """
-        Fetch messages from the server.
-        """
-        if not self.http_session:
-            raise RuntimeError(
-                "HTTP session not started. Call start_http_session first."
-            )
-        try:
-            async with self.http_session.get(
-                f"{SERVER_URI}/messages?recipient={self.recipient}&sender={self.sender}"
-            ) as response:
-                data = await self._handle_response(response)
-                return data.get("messages") if data else None
-        except aiohttp.ClientError as err:
-            raise RuntimeError(f"An error occurred while fetching messages: {err}")
 
     async def send_message(self, message: str) -> None:
         """
@@ -329,15 +322,29 @@ class ChatSession:
             ) as response:
                 if response.status in (200, 201):
                     return True
-                else:
-                    print(f"Failed to send message via API: HTTP {response.status}")
-                    print("Response:", await response.text())
-                    return False
+                return False
 
         except aiohttp.ClientError as err:
             raise RuntimeError(
                 f"An error occurred while sending message via API: {err}"
             )
+
+    async def fetch_messages(self) -> Optional[List[str]]:
+        """
+        Fetch messages from the server.
+        """
+        if not self.http_session:
+            raise RuntimeError(
+                "HTTP session not started. Call start_http_session first."
+            )
+        try:
+            async with self.http_session.get(
+                f"{SERVER_URI}/messages?recipient={self.recipient}&sender={self.sender}"
+            ) as response:
+                data = await self._handle_response(response)
+                return data.get("messages") if data else None
+        except aiohttp.ClientError as err:
+            raise RuntimeError(f"An error occurred while fetching messages: {err}")
 
     async def register_user(self) -> None:
         """
@@ -357,10 +364,7 @@ class ChatSession:
             ) as response:
                 if response.status in (200, 201):
                     return True
-                else:
-                    print(f"Failed to register user: HTTP {response.status}")
-                    print("Response:", await response.text())
-                    return False
+                return False
 
         except aiohttp.ClientError as err:
             raise RuntimeError(f"An error occurred while registering user: { err }")
