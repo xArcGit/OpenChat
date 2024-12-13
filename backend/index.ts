@@ -2,12 +2,12 @@ import { Database } from "bun:sqlite";
 import type { ServerWebSocket } from "bun";
 import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
-import { cors } from "hono/cors";
-import { nanoid } from "nanoid";
+import { logger } from "hono/logger";
 
 const app = new Hono();
+app.use(logger());
 const connections = new Map();
-const { upgradeWebSocket, websocket } = createBunWebSocket<WebSocket>();
+const { upgradeWebSocket, websocket } = createBunWebSocket<ServerWebSocket>();
 
 const db = new Database("db.sqlite", { strict: true });
 
