@@ -550,8 +550,8 @@ class ChatFrame(Frame):
       session_manager.fetch_messages()
       # TODO: Need to Add
 
-    except Exception as e:
-      print(f"Error starting chat with {recipient}: {e}")
+    except Exception as err:
+      raise ChatSessionError(f"Error starting chat with {recipient}: {err}")
 
   def on_input_change(self):
     pass
@@ -575,8 +575,8 @@ class ChatFrame(Frame):
       async with ChatSession() as session_manager:
         session_manager.send_message(message)
 
-    except Exception as e:
-      print(f"Error sending message: {e}")
+    except Exception as err:
+      raise ChatSessionError(f"Error sending message: {err}")
 
   async def receive_message(self) -> None:
     """
@@ -591,8 +591,8 @@ class ChatFrame(Frame):
         )
         self.chat_output.value = new_chat
 
-    except Exception as e:
-      print(f"Error receiving message: {e}")
+    except Exception as err:
+      raise ChatSessionError(f"Error receiving message: {err}")
 
 
 async def register_user(sender: str) -> None:
@@ -602,14 +602,14 @@ async def register_user(sender: str) -> None:
   try:
     session_manager = ChatSession(sender=sender)
     if session_manager.keys_exist():
-      return False
+      raise ChatSessionError("User already registered. Use existing keys.")
     else:
       session_manager.generate_keys()
       session_manager.save_keys()
       session_manager.register_user()
 
   except Exception as err:
-    raise RuntimeError(f"Error registering user: {err}")
+    raise ChatSessionError(f"Error registering user: {err}")
 
 
 async def main():
@@ -638,8 +638,8 @@ if __name__ == "__main__":
   try:
     asyncio.run(main())
   except ResizeScreenError:
-    print("The screen was resized. Exiting gracefully.")
+    raise ChatSessionError("The screen was resized. Exiting gracefully.")
   except StopApplication:
-    print("Application was stopped.")
-  except Exception as e:
-    print(f"An unexpected error occurred: {e}")
+    raise ChatSessionError("Application was stopped.")
+  except Exception as err:
+    raise ChatSessionError(f"An unexpected error occurred: {err}")
