@@ -377,9 +377,6 @@ class ChatSession:
       )
 
   async def listen_for_messages(self):
-    """
-    Listen for incoming WebSocket messages.
-    """
     try:
       async for message in self.websocket:
         if message.type == aiohttp.WSMessageType.TEXT:
@@ -387,11 +384,13 @@ class ChatSession:
           self.messages.append(f"{self.recipient}: {decrypted_message}")
         elif message.type == aiohttp.WSMessageType.ERROR:
           raise ChatSessionError("WebSocket error occurred", code=500)
+    except aiohttp.WSServerHandshakeError as err:
+      raise ChatSessionError(f"WebSocket handshake error: {err}", code=500)
+    except asyncio.CancelledError:
+      pass  # TODO: Handle clean cancellation (e.g., when exiting the program)
     except Exception as err:
       raise ChatSessionError(
-        f"Error while listening for WebSocket messages: {err}",
-        code=500,
-        details={"operation": "Listen for WebSocket messages"},
+        f"Error while listening for WebSocket messages: {err}", code=500
       )
 
   async def send_message(self, message: str) -> None:
@@ -420,16 +419,6 @@ class ChatSession:
       await self.send_message_via_api(message)
 
   async def send_message_via_api(self, message: str) -> None:
-    """
-    Send a message via the HTTP API if WebSocket is not connected.
-    """
-    if not self.http_session:
-      raise ChatSessionError(
-        "HTTP session not started. Call start_http_session first.",
-        code=400,
-        details={"operation": "Send HTTP message"},
-      )
-
     if not self.sender or not self.recipient:
       raise ChatSessionError(
         "Both sender and recipient must be set before sending a message.",
@@ -439,7 +428,6 @@ class ChatSession:
 
     try:
       encrypted_message = await self.encrypt_message(message)
-
       async with self.http_session.post(
         f"{SERVER_URI}/messages",
         json={
@@ -457,9 +445,7 @@ class ChatSession:
           )
     except Exception as err:
       raise ChatSessionError(
-        f"An error occurred while sending the message via API: {err}",
-        code=500,
-        details={"operation": "Send HTTP message"},
+        f"An error occurred while sending the message via API: {err}", code=500
       )
 
 
