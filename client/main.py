@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 import yaml
 from concurrent.futures import ThreadPoolExecutor
+from asciimatics.event import KeyboardEvent
 from asciimatics.exceptions import ResizeScreenError, StopApplication
 from asciimatics.scene import Scene
 from asciimatics.screen import Screen
@@ -443,6 +444,58 @@ class ChatSession:
         f"An error occurred while sending the message via API: {err}", code=500
       )
 
+  async def find_user(self) -> None:
+    """
+    Find a user by username.
+    """
+    if not self.http_session:
+      raise RuntimeError("HTTP session not started. Call start_http_session first.")
+    try:
+      async with self.http_session.get(
+        f"{SERVER_URI}/user?username={self.recipient}"
+      ) as response:
+        data = await self._handle_response(response)
+        if data and (user := data.get("user")):
+          public_key_pem = user.get("publicKey")
+          if public_key_pem:
+            self.recipient_public_key = serialization.load_pem_public_key(
+              public_key_pem.encode("utf-8"), backend=default_backend()
+            )
+    except aiohttp.ClientError as err:
+      raise RuntimeError(f"An error occurred while finding user: {err}")
+
+  async def register_user(self) -> None:
+    if not self.sender:
+      raise ChatSessionError(
+        "Sender must be set before registering a user.",
+        code=400,
+        details={"operation": "Register user"},
+      )
+
+    if not self.sender_public_key:
+      await self.generate_keys()
+
+    try:
+      async with self.http_session.post(
+        f"{SERVER_URI}/register",
+        json={
+          "username": self.sender,
+          "publicKey": self.sender_public_key.decode("utf-8"),
+        },
+      ) as response:
+        data = await self._handle_response(response)
+        if data.get("status") != "success":
+          raise ChatSessionError(
+            f"Registration failed: {data.get('message', 'Unknown error from server')}",
+            code=response.status,
+            details={"operation": "Register user"},
+          )
+    except Exception as err:
+      raise ChatSessionError(
+        f"An error occurred while registering the user: {err}",
+        code=500,
+      )
+
 
 class ChatApp:
   def __init__(self, screen, recipient: str):
@@ -453,12 +506,14 @@ class ChatApp:
     self.queue = asyncio.Queue()
 
   def create_chat_frame(self):
-    self.chat_frame = ChatFrame(self.screen, self.recipient, self.queue)
+    self.chat_frame = ChatFrame(self.screen, self.recipient, self.queue, self.executor)
     self.screen.play([Scene([self.chat_frame], -1)])
 
 
 class ChatFrame(Frame):
-  def __init__(self, screen, recipient: str, queue: asyncio.Queue):
+  def __init__(
+    self, screen, recipient: str, queue: asyncio.Queue, executor: ThreadPoolExecutor
+  ):
     super().__init__(
       screen,
       screen.height,
@@ -468,14 +523,18 @@ class ChatFrame(Frame):
     )
     self.recipient = recipient
     self.queue = queue
+    self.executor = executor  # Store the executor
+    self.session_manager = ChatSession(self.recipient)  # Initialize ChatSession
     layout = Layout([1], fill_frame=True)
     self.add_layout(layout)
 
+    # Chat output box (readonly)
     self.chat_output = TextBox(
       height=screen.height - 5, as_string=True, readonly=True, line_wrap=True
     )
     layout.add_widget(self.chat_output)
 
+    # Chat input box
     self.chat_input = Text("/>", on_change=self.on_input_change)
     layout.add_widget(self.chat_input)
 
@@ -483,70 +542,81 @@ class ChatFrame(Frame):
 
     self.loop = asyncio.get_event_loop()
 
-  async def initialize_chat(self) -> None:
-    try:
-      session_manager = ChatSession(self.recipient)
-      await session_manager.load_keys()
-      await session_manager.find_user()
-      await session_manager.fetch_messages()
+    # Start receiving messages in a background task
+    self.start_receiving_messages()
 
-      for message in session_manager.messages:
-        self.chat_output.value += f"{session_manager.recipient}: {message}\n"
-    except Exception as err:
-      raise ChatSessionError(
-        f"Error starting chat with {self.recipient}: {err}",
-        code=500,
-        details={"operation": "Initialize chat"},
-      )
+  def process_event(self, event):
+    """
+    Override `process_event` to capture Enter key presses.
+    """
+
+    if isinstance(event, KeyboardEvent):
+      # Check if Enter is pressed (key code 10 or 13, depending on platform)
+      if event.key_code in (10, 13):  # 10 = LF (Linux/Unix), 13 = CR (Windows)
+        self.on_submit()
+        return  # Stop further processing of this event
+
+    # Pass the event to the base class for normal handling
+    return super().process_event(event)
 
   def on_input_change(self):
+    """Handle input changes if needed (currently a placeholder)."""
     pass
 
   def on_submit(self):
-    message = self.chat_input.value
+    """Handle Enter key press to send the message."""
+    message = self.chat_input.value.strip()
     if message:
+      # Update chat output with the new message
       current_chat = self.chat_output.value or ""
       new_chat = f"{current_chat}\nYou: {message}"
       self.chat_output.value = new_chat
-      self.chat_input.value = ""
+      self.chat_input.value = ""  # Clear input
       self.scene.force_update = True
 
+      # Asynchronously send the message
       self.executor.submit(self.loop.create_task, self.send_message(message))
 
   async def send_message(self, message: str) -> None:
+    """Send a message to the recipient."""
     try:
-      session_manager = ChatSession(self.recipient)
-      await session_manager.send_message(message)
-
+      await self.session_manager.send_message(message)
+    except Exception as err:
       current_chat = self.chat_output.value or ""
-      new_chat = f"{current_chat}\nYou: {message}"
-      self.chat_output.value = new_chat
-    except Exception as err:
-      raise ChatSessionError(
-        f"Error sending message: {err}", code=500, details={"operation": "Send message"}
-      )
+      error_message = f"\n[Error]: Failed to send message: {err}"
+      self.chat_output.value = current_chat + error_message
+      self.scene.force_update = True
 
-  async def receive_message(self) -> None:
-    try:
-      session_manager = ChatSession(self.recipient)
-      await session_manager.receive_message()
+  async def receive_message(self):
+    """Fetch messages from the recipient and update the queue."""
+    while True:
+      try:
+        await self.session_manager.receive_message()
+        if self.session_manager.messages:
+          # Get the latest message from the recipient
+          message = self.session_manager.messages[-1]
+          await self.queue.put(message)
+      except Exception as err:
+        current_chat = self.chat_output.value or ""
+        error_message = f"\n[Error]: Failed to receive message: {err}"
+        self.chat_output.value = current_chat + error_message
+        self.scene.force_update = True
 
-      await self.queue.put(session_manager.messages[-1])
-    except Exception as err:
-      raise ChatSessionError(
-        f"Error receiving message: {err}",
-        code=500,
-        details={"operation": "Receive message"},
-      )
+      # Add a small delay to prevent busy-looping
+      await asyncio.sleep(0.5)
 
   async def update_chat(self):
+    """Update the chat window with new messages."""
     while True:
       message = await self.queue.get()
       current_chat = self.chat_output.value or ""
       self.chat_output.value = f"{current_chat}\n{self.recipient}: {message}"
+      self.scene.force_update = True
 
   def start_receiving_messages(self):
+    """Start the background tasks for receiving and updating chat."""
     self.executor.submit(self.loop.create_task, self.receive_message())
+    self.executor.submit(self.loop.create_task, self.update_chat())
 
 
 async def register_user(sender: str) -> None:
