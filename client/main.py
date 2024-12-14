@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import json
 import os
 import sys
 from dataclasses import dataclass, field
@@ -49,12 +48,8 @@ class ChatSessionError(Exception):
     Return a user-friendly string representation of the error,
     including the message, code, and details (if provided).
     """
-    base_message = f"{self.__class__.__name__}: {self.args[0]}"
-    if self.code:
-      base_message += f" (Code: {self.code})"
-    if self.details:
-      base_message += f" | Details: {self.details}"
-    return base_message
+    details_str = ", ".join(f"{key}: {value}" for key, value in self.details.items())
+    return f"{self.args[0]} (Code: {self.code}) | Details: {details_str}"
 
 
 @dataclass
@@ -454,16 +449,17 @@ class ChatApp:
     self.screen = screen
     self.recipient = recipient
     self.chat_frame = None
-    self.executor = ThreadPoolExecutor(max_workers=2)  # Limit the number of threads
+    self.executor = ThreadPoolExecutor(max_workers=2)
+    self.queue = asyncio.Queue()
 
   def create_chat_frame(self):
-    self.chat_frame = ChatFrame(self.screen, self.recipient)
+    self.chat_frame = ChatFrame(self.screen, self.recipient, self.queue)
     self.screen.play([Scene([self.chat_frame], -1)])
 
 
 class ChatFrame(Frame):
-  def __init__(self, screen, recipient: str):
-    super(ChatFrame, self).__init__(
+  def __init__(self, screen, recipient: str, queue: asyncio.Queue):
+    super().__init__(
       screen,
       screen.height,
       screen.width,
@@ -471,14 +467,12 @@ class ChatFrame(Frame):
       title=f"Chat with {recipient}",
     )
     self.recipient = recipient
+    self.queue = queue
     layout = Layout([1], fill_frame=True)
     self.add_layout(layout)
 
     self.chat_output = TextBox(
-      height=screen.height - 5,
-      as_string=True,
-      readonly=True,
-      line_wrap=True,
+      height=screen.height - 5, as_string=True, readonly=True, line_wrap=True
     )
     layout.add_widget(self.chat_output)
 
@@ -489,25 +483,20 @@ class ChatFrame(Frame):
 
     self.loop = asyncio.get_event_loop()
 
-  async def __post_init__(self) -> None:
-    """
-    Start the chat for an existing user.
-    """
+  async def initialize_chat(self) -> None:
     try:
       session_manager = ChatSession(self.recipient)
       await session_manager.load_keys()
       await session_manager.find_user()
       await session_manager.fetch_messages()
 
-      # Display the previous messages
       for message in session_manager.messages:
         self.chat_output.value += f"{session_manager.recipient}: {message}\n"
-
     except Exception as err:
       raise ChatSessionError(
         f"Error starting chat with {self.recipient}: {err}",
         code=500,
-        details={"operation": "Start chat"},
+        details={"operation": "Initialize chat"},
       )
 
   def on_input_change(self):
@@ -522,42 +511,27 @@ class ChatFrame(Frame):
       self.chat_input.value = ""
       self.scene.force_update = True
 
-      # Send the message in a separate thread
       self.executor.submit(self.loop.create_task, self.send_message(message))
 
   async def send_message(self, message: str) -> None:
-    """
-    Send a message, either via WebSocket or API if offline.
-    """
     try:
       session_manager = ChatSession(self.recipient)
       await session_manager.send_message(message)
 
-      # After sending, append the message to the local chat
       current_chat = self.chat_output.value or ""
       new_chat = f"{current_chat}\nYou: {message}"
       self.chat_output.value = new_chat
-
     except Exception as err:
       raise ChatSessionError(
         f"Error sending message: {err}", code=500, details={"operation": "Send message"}
       )
 
   async def receive_message(self) -> None:
-    """
-    Receive a message via WebSocket, decrypt it, and display it.
-    """
     try:
       session_manager = ChatSession(self.recipient)
       await session_manager.receive_message()
 
-      # Display the latest message received
-      current_chat = self.chat_output.value or ""
-      new_chat = (
-        f"{current_chat}\n{session_manager.recipient}: {session_manager.messages[-1]}"
-      )
-      self.chat_output.value = new_chat
-
+      await self.queue.put(session_manager.messages[-1])
     except Exception as err:
       raise ChatSessionError(
         f"Error receiving message: {err}",
@@ -565,10 +539,13 @@ class ChatFrame(Frame):
         details={"operation": "Receive message"},
       )
 
+  async def update_chat(self):
+    while True:
+      message = await self.queue.get()
+      current_chat = self.chat_output.value or ""
+      self.chat_output.value = f"{current_chat}\n{self.recipient}: {message}"
+
   def start_receiving_messages(self):
-    """
-    Start receiving messages in a separate thread.
-    """
     self.executor.submit(self.loop.create_task, self.receive_message())
 
 
@@ -589,9 +566,15 @@ async def register_user(sender: str) -> None:
       session_manager.save_keys()
       await session_manager.register_user()
 
-  except Exception as err:
+  except ChatSessionError as err:
     raise ChatSessionError(
       f"Error registering user: {err}",
+      code=500,
+      details={"operation": "User Registration"},
+    )
+  except Exception as err:
+    raise ChatSessionError(
+      f"An unexpected error occurred: {err}",
       code=500,
       details={"operation": "User Registration"},
     )
