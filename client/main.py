@@ -26,9 +26,35 @@ WEBSOCKET_URI = "ws://localhost:3000"
 
 
 class ChatSessionError(Exception):
-  """Custom exception class for ChatSession errors."""
+  """Custom exception class for handling ChatSession-related errors."""
 
-  pass
+  def __init__(
+    self, message: str, code: int = 400, details: Optional[Dict[str, Any]] = None
+  ):
+    """
+    Initialize the ChatSessionError with a specific error message,
+    optional error code, and additional details.
+
+    Args:
+        message (str): The error message to describe the issue.
+        code (int, optional): An error code for categorization. Defaults to None.
+        details (dict, optional): Additional context or metadata about the error. Defaults to None.
+    """
+    super().__init__(message)
+    self.code = code
+    self.details = details or {}
+
+  def __str__(self) -> str:
+    """
+    Return a user-friendly string representation of the error,
+    including the message, code, and details (if provided).
+    """
+    base_message = f"{self.__class__.__name__}: {self.args[0]}"
+    if self.code:
+      base_message += f" (Code: {self.code})"
+    if self.details:
+      base_message += f" | Details: {self.details}"
+    return base_message
 
 
 @dataclass
