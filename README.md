@@ -20,3 +20,7 @@ The new version of OpenChat has been upgraded with the following technologies:
 ## Old Code Base
 
 The old code base can be found in the `log` folder for reference and historical purposes.
+
+## Check Log and Implementation of Zig
+
+For detailed information on the log and the implementation of Zig in the new version of OpenChat, please refer to the `TODO.md` file located in the root directory of the project.
